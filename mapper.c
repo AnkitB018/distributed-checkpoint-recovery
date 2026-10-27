@@ -83,7 +83,29 @@ static void to_reducer(int r, const msg_t *m)
  */
 static void take_checkpoint(long c)
 {
-    (void)c;
+    //save mappers current offset in file
+    char path[64];
+    snprintf(path, sizeof(path), CKPT_DIR "/m%d_%ld", args->id, c);
+
+    if(!save_int(path, offset)){
+        fail("save mapper checkpoint!");
+    }
+
+    //Forward the marker to every reducer
+    msg_t marker = make(MT_FWD_CHECKPOINT);
+    marker.checkpoint_id = c;
+
+    for(int r=0 ; r< args->R ; r++){
+        to_reducer(r, &marker);
+    }
+
+    //acknowldge only after successfully sending all
+    if(!broken){
+        int ack_type = (c == LAST_CHECKPOINT_ID) ? MT_LAST_CHECKPOINT_ACK : MT_CHECKPOINT_ACK;
+
+        to_coordinator(ack_type, c);
+    }
+
 }
 
 /*
