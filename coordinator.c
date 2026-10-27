@@ -17,7 +17,7 @@ struct wstate {
     long last_hb;       /* time of the last heartbeat from the current process */
     int  heard;         /* current process has sent a heartbeat (its sockets are up) */
     long last_cp;       /* newest checkpoint this worker acknowledged */
-    /* TODO: add whatever else you need per worker */
+    int done;
 };
 
 static const config_t *cfg;
@@ -98,19 +98,23 @@ static void handle(const msg_t *m, long now)
     /* TODO (Task 3): ignore messages from before the last rollback. */
 
     switch (m->type) {
-    case MT_CHECKPOINT_ACK:
-        /* TODO (Task 2) */
-        break;
-    case MT_LAST_CHECKPOINT_ACK:
-        /* TODO (Task 1) */
-        break;
-    case MT_DONE:
-        /* TODO (Task 1) */
-        break;
-    case MT_RECOVERY_ACK:
-        /* TODO (Task 3) */
-        break;
-    default:
+        case MT_CHECKPOINT_ACK:
+            /* TODO (Task 2) */
+            break;
+        case MT_LAST_CHECKPOINT_ACK:
+            if(m->recovery_id == rid && m->checkpoint_id == LAST_CHECKPOINT_ID){
+                ws[w].last_cp = LAST_CHECKPOINT_ID;
+            }
+            break;
+        case MT_DONE:
+            if(is_mapper(w) && m->recovery_id == rid){
+                ws[w].done = 1;
+            }
+            break;
+        case MT_RECOVERY_ACK:
+            /* TODO (Task 3) */
+            break;
+        default:
         break;
     }
 }
@@ -151,16 +155,63 @@ int coordinator_loop(const config_t *c, job_t *j)
         reap_children(job);     /* bookkeeping only */
 
         if (phase == PH_EXITING) {
-            /* TODO (Task 1). */
+            int all_exited = 1;
+            
+            for(int w = 0 ; w< job->n; w++){
+                if(!job->exited[w]){
+                    all_exited = 0;
+                    break;
+                }
+            }
+
+            if(all_exited){
+                return 0;
+            }
             continue;
         }
 
         /* TODO (Task 3) */
         (void)start_recovery;
-
-        /* TODO: phase actions. */
-        (void)send_to;
-        (void)set_phase;
         (void)next_cp_id;
+
+        if(phase == PH_CP){
+            // Check whether the mapper has finished
+            int all_done = 1;
+
+            for(int w=0 ; w<cfg->M; w++){
+                if(!ws[w].done){
+                    all_done = 0;
+                    break;
+                }
+            }
+
+            if(all_done){
+                set_phase(PH_LAST_CP);
+
+                //request final checkpoint for each mapper
+                for (int w = 0; w < cfg->M; w++) {
+                    send_to(w, MT_CHECKPOINT, LAST_CHECKPOINT_ID);
+                }
+            }
+
+        }else if(phase == PH_LAST_CP){
+            //wait for all mappers and reducers to ack checkpoint 0
+            int all_acked = 1;
+            for(int w = 0; w< job->n ; w++){
+                if (ws[w].last_cp != LAST_CHECKPOINT_ID) {
+                    all_acked = 0;
+                    break;
+                }
+            }
+
+            if(all_acked){
+                for(int i=0 ; i<job->n ; i++){
+                    send_to(i, MT_EXIT, LAST_CHECKPOINT_ID);
+                }
+                set_phase(PH_EXITING);
+            }
+        }
+
+
     }
 }
