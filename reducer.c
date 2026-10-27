@@ -104,8 +104,34 @@ static int is_stale(const msg_t *m)
  */
 static void handle_marker(int j, long c)
 {
-    (void)j;
-    (void)c;
+    // block and report that mapper j has sent checkpoint marker
+    if(!blocked[j]){
+        blocked[j] = 1;
+        nblocked++;
+        chaos_report_blocked(nblocked);
+    }
+
+    //wait until all mappers have sent their markers and then write checkpoint and send ack
+    if(nblocked == args->M){
+        char path[64];
+        snprintf(path, sizeof(path), CKPT_DIR "/r%d_%ld", args->id, c);
+
+        //save count
+        if(!wcmap_save(counts, path)){
+            fail("save reducer checkpoint!");
+        }
+
+        //notify the cordinator
+        int ack_type = (c == LAST_CHECKPOINT_ID) ? MT_LAST_CHECKPOINT_ACK : MT_CHECKPOINT_ACK;
+        
+        to_coordinator(ack_type, c);
+
+        //allow normal processing
+        memset(blocked, 0, sizeof(blocked));
+        nblocked = 0;
+        chaos_report_blocked(nblocked);
+    }
+
 }
 
 /* PROVIDED: one message from connection i. */
