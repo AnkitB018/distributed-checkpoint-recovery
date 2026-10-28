@@ -117,7 +117,7 @@ static void handle_marker(int j, long c)
         snprintf(path, sizeof(path), CKPT_DIR "/r%d_%ld", args->id, c);
 
         //save count
-        if(!wcmap_save(counts, path)){
+        if(wcmap_save(counts, path) != 0){
             fail("save reducer checkpoint!");
         }
 

@@ -87,7 +87,7 @@ static void take_checkpoint(long c)
     char path[64];
     snprintf(path, sizeof(path), CKPT_DIR "/m%d_%ld", args->id, c);
 
-    if(!save_int(path, offset)){
+    if(save_int(path, offset) != 0){
         fail("save mapper checkpoint!");
     }
 
