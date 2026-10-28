@@ -111,10 +111,52 @@ static void take_checkpoint(long c)
 /*
  * TODO (Task 3)
  */
+/* Restore this mapper to the checkpoint selected by the coordinator. */
 static void recover(long c, int new_rid)
 {
-    (void)c;
-    (void)new_rid;
+    /* Ignore recovery requests from an older generation. */
+    if (new_rid < rid) {
+        wlog("   ignored: stale recovery id %d", new_rid);
+        return;
+    }
+
+    /* If we have already recovered, acknowledge a duplicate request. */
+    if (new_rid == rid) {
+        to_coordinator(MT_RECOVERY_ACK, c);
+        return;
+    }
+
+    /* Close connections belonging to the old execution. */
+    disconnect_all();
+
+    /* If no checkpoint exists, restart from the beginning. */
+    long restored_offset = 0;
+
+    if (c != NO_CHECKPOINT) {
+        char path[64];
+        snprintf(path, sizeof path, CKPT_DIR "/m%d_%ld",
+                 args->id, c);
+
+        if (load_int(path, &restored_offset) != 0)
+            fail("load mapper checkpoint");
+    }
+
+    /* Validate the restored file position. */
+    if (restored_offset < 0 || restored_offset > args->nfiles) {
+        wlog("invalid mapper checkpoint offset %ld", restored_offset);
+        abort();
+    }
+
+    offset = restored_offset;
+    rid = new_rid;
+
+    /* Resume normal operation using fresh reducer connections. */
+    broken = 0;
+    done_sent = 0;
+
+    connect_all();
+
+    to_coordinator(MT_RECOVERY_ACK, c);
 }
 
 /* Handle every message waiting on the control socket. */
@@ -137,6 +179,10 @@ static void poll_control(void)
             recover((long)m.checkpoint_id, m.recovery_id);
             break;
         case MT_EXIT:
+            if(m.recovery_id != rid){
+                wlog("   ignored: stale EXIT");
+                break;
+            }
             wlog("exit");
             disconnect_all();
             exit(0);
