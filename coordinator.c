@@ -27,6 +27,9 @@ static enum phase     phase;
 static int            rid;              /* current recovery id */
 static long           next_cp_id = 1;   /* never reused */
 
+static long checkpoint_in_progress = NO_CHECKPOINT;
+static long last_checkpoint_ms;
+
 static const char *phase_name[] = {
     "CP", "RECOVER_REDUCER", "RECOVER_MAPPER", "LAST_CP", "EXITING",
 };
@@ -99,7 +102,9 @@ static void handle(const msg_t *m, long now)
 
     switch (m->type) {
         case MT_CHECKPOINT_ACK:
-            /* TODO (Task 2) */
+            if(phase == PH_CP && m->recovery_id == rid && checkpoint_in_progress != NO_CHECKPOINT && m->checkpoint_id == checkpoint_in_progress){
+                ws[w].last_cp = (long)m->checkpoint_id;
+            }
             break;
         case MT_LAST_CHECKPOINT_ACK:
             if(m->recovery_id == rid && m->checkpoint_id == LAST_CHECKPOINT_ID){
@@ -132,6 +137,10 @@ int coordinator_loop(const config_t *c, job_t *j)
     }
     phase = PH_CP;
     rid = 0;
+
+    next_cp_id = 1;
+    checkpoint_in_progress = NO_CHECKPOINT;
+    last_checkpoint_ms = now;
 
     for (;;) {
         chaos_tick(job);        /* PROVIDED: do not remove */
@@ -172,10 +181,28 @@ int coordinator_loop(const config_t *c, job_t *j)
 
         /* TODO (Task 3) */
         (void)start_recovery;
-        (void)next_cp_id;
 
         if(phase == PH_CP){
-            // Check whether the mapper has finished
+
+            // check whether the active checkpoint progress is complete
+            if(checkpoint_in_progress != NO_CHECKPOINT){
+                int all_acked = 1;
+
+                for(int w=0 ; w< job->n ; w++){
+                    if(ws[w].last_cp != checkpoint_in_progress){
+                        all_acked = 0;
+                        break;
+                    }
+                }
+
+                if(all_acked){
+                    wlog("checkpoint %ld complete", checkpoint_in_progress);
+                    checkpoint_in_progress = NO_CHECKPOINT;
+                }
+
+            }            
+
+            // Check whether the all the mappers has finished it's files
             int all_done = 1;
 
             for(int w=0 ; w<cfg->M; w++){
@@ -185,12 +212,20 @@ int coordinator_loop(const config_t *c, job_t *j)
                 }
             }
 
-            if(all_done){
+            if(all_done && checkpoint_in_progress == NO_CHECKPOINT){
                 set_phase(PH_LAST_CP);
 
                 //request final checkpoint for each mapper
                 for (int w = 0; w < cfg->M; w++) {
                     send_to(w, MT_CHECKPOINT, LAST_CHECKPOINT_ID);
+                }
+            // otherwise initiate a checkpoint when time
+            }else if(!all_done && checkpoint_in_progress == NO_CHECKPOINT && cfg->interval_ms > 0 && now - last_checkpoint_ms >= cfg->interval_ms){
+                checkpoint_in_progress = next_cp_id++;
+                last_checkpoint_ms = now;
+                wlog("starting periodic checkpoint %ld", checkpoint_in_progress);
+                for(int w=0; w<cfg->M ; w++){
+                    send_to(w, MT_CHECKPOINT, checkpoint_in_progress);
                 }
             }
 
