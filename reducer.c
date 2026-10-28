@@ -60,10 +60,48 @@ static void close_conn(int i)
  */
 static void recover(long c, int new_rid)
 {
-    (void)c;
-    (void)new_rid;
-    (void)to_coordinator;           /* TODO: remove */
-    (void)nblocked;
+    if(new_rid < rid){
+        wlog("      ignored: staled recovery id %d", new_rid);
+        return;
+    }
+
+    if(new_rid == rid){
+        to_coordinator(MT_RECOVERY_ACK, c);
+        return;
+    }
+
+    wcmap_t *restored;
+
+    if (c == NO_CHECKPOINT) {
+        /* No completed checkpoint exists: start with an empty map. */
+        restored = wcmap_new();
+    } else {
+        char path[64];
+        snprintf(path, sizeof path, CKPT_DIR "/r%d_%ld",
+                 args->id, c);
+
+        restored = wcmap_load(path);
+        if (!restored)
+            fail("load reducer checkpoint");
+    }
+
+    /* Replace the current counts with the saved counts. */
+    wcmap_free(counts);
+    counts = restored;
+
+    /* Close old mapper connections before the mappers reconnect. */
+    while (nconn > 0)
+        close_conn(nconn - 1);
+
+    /* Clear checkpoint-marker bookkeeping. */
+    memset(blocked, 0, sizeof blocked);
+    nblocked = 0;
+    chaos_report_blocked(nblocked);
+
+    rid = new_rid;
+
+    to_coordinator(MT_RECOVERY_ACK, c);
+
 }
 
 static void handle_control(void)
@@ -76,6 +114,12 @@ static void handle_control(void)
         if (m.type == MT_RECOVER)
             recover((long)m.checkpoint_id, m.recovery_id);
         else if (m.type == MT_EXIT) {
+
+            if (m.recovery_id != rid) {
+                wlog("   ignored: stale EXIT");
+                continue;
+            }
+
             size_t pos = 0;
             const char *w;
             int64_t c, total = 0;
@@ -93,10 +137,10 @@ static void handle_control(void)
 /*
  * TODO (Task 3)
  */
+/* Reject data from an older execution or before recovery completes. */
 static int is_stale(const msg_t *m)
 {
-    (void)m;
-    return 0;
+    return rid < 0 || m->recovery_id != rid;
 }
 
 /*
